@@ -20,6 +20,7 @@ from vllm.entrypoints.openai.protocol import (
     CompletionResponseStreamChoice,
     CompletionStreamResponse,
     ErrorResponse,
+    LatencyBreakdown,
     PromptTokenUsageInfo,
     RequestResponseMetadata,
     UsageInfo,
@@ -38,6 +39,27 @@ from vllm.utils.async_utils import merge_async_iterators
 from vllm.utils.collection_utils import as_list
 
 logger = init_logger(__name__)
+
+
+def _extract_latency_breakdown(metrics: object) -> LatencyBreakdown | None:
+    if metrics is None:
+        return None
+    first_token_latency = getattr(metrics, "first_token_latency", None)
+    if first_token_latency is None or first_token_latency <= 0:
+        return None
+
+    queue_time = max(getattr(metrics, "queue_latency", 0.0) or 0.0, 0.0)
+    kv_wait_time = max(getattr(metrics, "kv_cache_wait_time", 0.0) or 0.0, 0.0)
+    prefill_time = max(getattr(metrics, "prefill_latency", 0.0) or 0.0, 0.0)
+    queue_no_kv = max(queue_time - kv_wait_time, 0.0)
+
+    return LatencyBreakdown(
+        total_ttft_seconds=first_token_latency,
+        queue_time_seconds=queue_time,
+        kv_cache_wait_time_seconds=kv_wait_time,
+        queue_time_no_kv_seconds=queue_no_kv,
+        prefill_time_seconds=prefill_time,
+    )
 
 
 class OpenAIServingCompletion(OpenAIServing):
@@ -328,6 +350,7 @@ class OpenAIServingCompletion(OpenAIServing):
         num_prompt_tokens = [0] * num_prompts
         num_cached_tokens = None
         first_iteration = True
+        last_metrics: object | None = None
 
         stream_options = request.stream_options
         include_usage, include_continuous_usage = should_include_usage(
@@ -342,6 +365,8 @@ class OpenAIServingCompletion(OpenAIServing):
                 if first_iteration:
                     num_cached_tokens = res.num_cached_tokens
                     first_iteration = False
+                if res.metrics is not None:
+                    last_metrics = res.metrics
 
                 prompt_text = res.prompt
                 if prompt_text is None:
@@ -474,6 +499,10 @@ class OpenAIServingCompletion(OpenAIServing):
                     cached_tokens=num_cached_tokens
                 )
 
+            latency_breakdown = _extract_latency_breakdown(last_metrics)
+            if latency_breakdown is not None:
+                final_usage_info.latency_breakdown = latency_breakdown
+
             if include_usage:
                 final_usage_chunk = CompletionStreamResponse(
                     id=request_id,
@@ -587,6 +616,12 @@ class OpenAIServingCompletion(OpenAIServing):
             completion_tokens=num_generated_tokens,
             total_tokens=num_prompt_tokens + num_generated_tokens,
         )
+
+        latency_breakdown = _extract_latency_breakdown(
+            last_final_res.metrics if last_final_res else None
+        )
+        if latency_breakdown is not None:
+            usage.latency_breakdown = latency_breakdown
 
         if (
             self.enable_prompt_tokens_details

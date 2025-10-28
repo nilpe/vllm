@@ -93,6 +93,7 @@ class BenchmarkMetrics:
     # Max output tokens per second and concurrent requests at that peak
     max_output_tokens_per_s: float
     max_concurrent_requests: int
+    ttft_breakdown_ms: dict[str, dict[str, float | list[tuple[float, float]]]] | None = None
 
 
 @dataclass
@@ -106,6 +107,26 @@ class EmbedBenchmarkMetrics:
     std_e2el_ms: float
     median_e2el_ms: float
     percentiles_e2el_ms: float
+
+
+def summarize_latency_component(
+    values: list[float], percentiles: list[float]
+) -> dict[str, float | list[tuple[float, float]]]:
+    if not values:
+        return {
+            "mean": 0.0,
+            "std": 0.0,
+            "median": 0.0,
+            "percentiles": [(p, 0.0) for p in percentiles],
+        }
+
+    arr = np.asarray(values, dtype=float) * 1000.0
+    return {
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "median": float(np.median(arr)),
+        "percentiles": [(p, float(np.percentile(arr, p))) for p in percentiles],
+    }
 
 
 def _get_current_request_rate(
@@ -303,6 +324,12 @@ def calculate_metrics(
     all_tpots: list[float] = []
     ttfts: list[float] = []
     e2els: list[float] = []
+    ttft_components: dict[str, list[float]] = {
+        "queue_time_seconds": [],
+        "queue_time_no_kv_seconds": [],
+        "kv_cache_wait_time_seconds": [],
+        "prefill_time_seconds": [],
+    }
     for i in range(len(outputs)):
         if outputs[i].success:
             output_len = outputs[i].output_tokens
@@ -329,6 +356,12 @@ def calculate_metrics(
             all_tpots.append(tpot)
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
+            if outputs[i].ttft_breakdown:
+                breakdown = outputs[i].ttft_breakdown
+                for key, container in ttft_components.items():
+                    value = breakdown.get(key)
+                    if isinstance(value, (int, float)):
+                        container.append(float(value))
             e2els.append(outputs[i].latency)
             completed += 1
         else:
@@ -432,6 +465,20 @@ def calculate_metrics(
         else:
             print("tip: install termplotlib and gnuplot to plot the metrics")
 
+    component_labels = {
+        "queue_time_seconds": "queue",
+        "queue_time_no_kv_seconds": "queue_no_kv",
+        "kv_cache_wait_time_seconds": "kv_cache_wait",
+        "prefill_time_seconds": "prefill",
+    }
+    ttft_breakdown_summary_ms = {
+        label: summarize_latency_component(ttft_components[key], selected_percentiles)
+        for key, label in component_labels.items()
+        if ttft_components[key]
+    }
+    if not ttft_breakdown_summary_ms:
+        ttft_breakdown_summary_ms = None
+
     metrics = BenchmarkMetrics(
         completed=completed,
         failed=len(failed_outputs),
@@ -468,6 +515,7 @@ def calculate_metrics(
         ],
         max_output_tokens_per_s=max_output_tokens_per_s,
         max_concurrent_requests=max_concurrent_requests,
+        ttft_breakdown_ms=ttft_breakdown_summary_ms,
     )
 
     return metrics, actual_output_lens
@@ -803,6 +851,7 @@ async def benchmark(
             "errors": [output.error for output in outputs],
             "max_output_tokens_per_s": metrics.max_output_tokens_per_s,
             "max_concurrent_requests": metrics.max_concurrent_requests,
+            "ttft_breakdown_ms": metrics.ttft_breakdown_ms,
         }
     else:
         result = {
@@ -859,6 +908,20 @@ async def benchmark(
 
     if task_type == TaskType.GENERATION:
         process_one_metric("ttft", "TTFT", "Time to First Token")
+        if metrics.ttft_breakdown_ms:
+            print("{s:{c}^{n}}".format(s="TTFT Breakdown", n=50, c="-"))
+            component_titles = {
+                "queue": "Queue wait (total)",
+                "queue_no_kv": "Queue wait (no KV fetch)",
+                "kv_cache_wait": "KV cache wait",
+                "prefill": "Prefill compute",
+            }
+            for key, summary in metrics.ttft_breakdown_ms.items():
+                title = component_titles.get(key, key)
+                mean_value = summary.get("mean", 0.0)
+                median_value = summary.get("median", 0.0)
+                print("{:<40} {:<10.2f}".format(f"{title} mean (ms):", mean_value))
+                print("{:<40} {:<10.2f}".format(f"{title} median (ms):", median_value))
         process_one_metric("tpot", "TPOT", "Time per Output Token (excl. 1st token)")
         process_one_metric("itl", "ITL", "Inter-token Latency")
     process_one_metric("e2el", "E2EL", "End-to-end Latency")

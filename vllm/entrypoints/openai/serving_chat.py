@@ -47,6 +47,7 @@ from vllm.entrypoints.openai.protocol import (
     DeltaMessage,
     DeltaToolCall,
     ErrorResponse,
+    LatencyBreakdown,
     FunctionCall,
     FunctionDefinition,
     PromptTokenUsageInfo,
@@ -73,6 +74,27 @@ from vllm.transformers_utils.tokenizers import (
 from vllm.utils.collection_utils import as_list
 
 logger = init_logger(__name__)
+
+
+def _extract_latency_breakdown(metrics: object) -> LatencyBreakdown | None:
+    if metrics is None:
+        return None
+    first_token_latency = getattr(metrics, "first_token_latency", None)
+    if first_token_latency is None or first_token_latency <= 0:
+        return None
+
+    queue_time = max(getattr(metrics, "queue_latency", 0.0) or 0.0, 0.0)
+    kv_wait_time = max(getattr(metrics, "kv_cache_wait_time", 0.0) or 0.0, 0.0)
+    prefill_time = max(getattr(metrics, "prefill_latency", 0.0) or 0.0, 0.0)
+    queue_no_kv = max(queue_time - kv_wait_time, 0.0)
+
+    return LatencyBreakdown(
+        total_ttft_seconds=first_token_latency,
+        queue_time_seconds=queue_time,
+        kv_cache_wait_time_seconds=kv_wait_time,
+        queue_time_no_kv_seconds=queue_no_kv,
+        prefill_time_seconds=prefill_time,
+    )
 
 
 class OpenAIServingChat(OpenAIServing):
@@ -520,6 +542,7 @@ class OpenAIServingChat(OpenAIServing):
         created_time = int(time.time())
         chunk_object_type: Final = "chat.completion.chunk"
         first_iteration = True
+        last_metrics: object | None = None
 
         # Send response for each token for each request.n (index)
         num_choices = 1 if request.n is None else request.n
@@ -604,6 +627,9 @@ class OpenAIServingChat(OpenAIServing):
                     num_prompt_tokens = len(res.prompt_token_ids)
                     if res.encoder_prompt_token_ids is not None:
                         num_prompt_tokens += len(res.encoder_prompt_token_ids)
+
+                if res.metrics is not None:
+                    last_metrics = res.metrics
 
                 # We need to do it here, because if there are exceptions in
                 # the result_generator, it needs to be sent as the FIRST
@@ -1225,6 +1251,10 @@ class OpenAIServingChat(OpenAIServing):
                         cached_tokens=num_cached_tokens
                     )
 
+                latency_breakdown = _extract_latency_breakdown(last_metrics)
+                if latency_breakdown is not None:
+                    final_usage.latency_breakdown = latency_breakdown
+
                 final_usage_chunk = ChatCompletionStreamResponse(
                     id=request_id,
                     object=chunk_object_type,
@@ -1238,13 +1268,24 @@ class OpenAIServingChat(OpenAIServing):
                 )
                 yield f"data: {final_usage_data}\n\n"
 
-            # report to FastAPI middleware aggregate usage across all choices
             num_completion_tokens = sum(previous_num_tokens)
-            request_metadata.final_usage_info = UsageInfo(
-                prompt_tokens=num_prompt_tokens,
-                completion_tokens=num_completion_tokens,
-                total_tokens=num_prompt_tokens + num_completion_tokens,
-            )
+            if include_usage:
+                final_usage_info = final_usage
+            else:
+                final_usage_info = UsageInfo(
+                    prompt_tokens=num_prompt_tokens,
+                    completion_tokens=num_completion_tokens,
+                    total_tokens=num_prompt_tokens + num_completion_tokens,
+                )
+                if self.enable_prompt_tokens_details and num_cached_tokens:
+                    final_usage_info.prompt_tokens_details = PromptTokenUsageInfo(
+                        cached_tokens=num_cached_tokens
+                    )
+                latency_breakdown = _extract_latency_breakdown(last_metrics)
+                if latency_breakdown is not None:
+                    final_usage_info.latency_breakdown = latency_breakdown
+            # report to FastAPI middleware aggregate usage across all choices
+            request_metadata.final_usage_info = final_usage_info
 
             # Log complete streaming response if output logging is enabled
             if self.enable_log_outputs and self.request_logger:
@@ -1566,6 +1607,9 @@ class OpenAIServingChat(OpenAIServing):
             completion_tokens=num_generated_tokens,
             total_tokens=num_prompt_tokens + num_generated_tokens,
         )
+        latency_breakdown = _extract_latency_breakdown(final_res.metrics)
+        if latency_breakdown is not None:
+            usage.latency_breakdown = latency_breakdown
         if self.enable_prompt_tokens_details and final_res.num_cached_tokens:
             usage.prompt_tokens_details = PromptTokenUsageInfo(
                 cached_tokens=final_res.num_cached_tokens

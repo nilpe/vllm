@@ -19,6 +19,28 @@ from tqdm.asyncio import tqdm
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 
+def _parse_latency_breakdown(usage: dict[str, Any]) -> dict[str, float] | None:
+    if not isinstance(usage, dict):
+        return None
+    breakdown = usage.get("latency_breakdown")
+    if not isinstance(breakdown, dict):
+        return None
+
+    keys = (
+        "total_ttft_seconds",
+        "queue_time_seconds",
+        "queue_time_no_kv_seconds",
+        "kv_cache_wait_time_seconds",
+        "prefill_time_seconds",
+    )
+    parsed: dict[str, float] = {}
+    for key in keys:
+        value = breakdown.get(key)
+        if isinstance(value, (int, float)):
+            parsed[key] = float(value)
+    return parsed or None
+
+
 class StreamedResponseHandler:
     """Handles streaming HTTP responses by accumulating chunks until complete
     messages are available."""
@@ -93,6 +115,7 @@ class RequestFuncOutput:
     prompt_len: int = 0
     error: str = ""
     start_time: float = 0.0
+    ttft_breakdown: dict[str, float] | None = None
 
 
 class RequestFunc(Protocol):
@@ -229,6 +252,7 @@ async def async_request_openai_completions(
                                 generated_text += text or ""
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
+                                output.ttft_breakdown = _parse_latency_breakdown(usage)
                 if first_chunk_received:
                     output.success = True
                 else:
@@ -465,6 +489,7 @@ async def async_request_openai_audio(
                                     output.output_tokens = usage.get(
                                         "completion_tokens"
                                     )
+                                    output.ttft_breakdown = _parse_latency_breakdown(usage)
 
                                 most_recent_timestamp = timestamp
 
@@ -505,6 +530,8 @@ async def _run_pooling_request(
                 else:
                     data = await response.json()
                     usage = data.get("usage", {})
+
+                output.ttft_breakdown = _parse_latency_breakdown(usage)
 
                 output.success = True
                 output.generated_text = ""

@@ -539,6 +539,10 @@ class Scheduler(SchedulerInterface):
                     # into the WAITING_FOR_REMOTE_KV state.
                     skipped_waiting_requests.prepend_request(request)
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                    if self.log_stats:
+                        request.record_event(
+                            EngineCoreEventType.KV_CACHE_WAIT_START, time.monotonic()
+                        )
                     continue
 
                 req_index += 1
@@ -1378,6 +1382,10 @@ class Scheduler(SchedulerInterface):
 
         # Return that we are ready.
         self.finished_recving_kv_req_ids.remove(request.request_id)
+        if self.log_stats:
+            request.record_event(
+                EngineCoreEventType.KV_CACHE_WAIT_END, time.monotonic()
+            )
         return True
 
     def _update_from_kv_xfer_finished(self, kv_connector_output: KVConnectorOutput):

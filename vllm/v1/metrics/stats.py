@@ -195,6 +195,12 @@ class RequestStateStats:
 
     # first token latency
     first_token_latency: float = 0.0
+    queue_latency: float = 0.0
+    prefill_latency: float = 0.0
+
+    # KV cache wait stats
+    kv_cache_wait_time: float = 0.0
+    kv_cache_wait_start_ts: float = 0.0
 
 
 @dataclass
@@ -211,6 +217,8 @@ class FinishedRequestStats:
     inference_time: float = 0.0
     decode_time: float = 0.0
     mean_time_per_output_token: float = 0.0
+    kv_cache_wait_time: float = 0.0
+    queue_time_wo_kv: float = 0.0
 
 
 class IterationStats:
@@ -267,6 +275,14 @@ class IterationStats:
         # Process the batch-level "new tokens" engine core event
         if is_prefilling:
             req_stats.first_token_ts = engine_core_timestamp
+            if req_stats.queued_ts and req_stats.scheduled_ts:
+                queue_latency = max(req_stats.scheduled_ts - req_stats.queued_ts, 0.0)
+                req_stats.queue_latency = queue_latency
+            if req_stats.scheduled_ts:
+                prefill_latency = max(
+                    engine_core_timestamp - req_stats.scheduled_ts, 0.0
+                )
+                req_stats.prefill_latency = prefill_latency
         else:
             itl = engine_core_timestamp - req_stats.last_token_ts
             self.inter_token_latencies_iter.append(itl)
@@ -296,6 +312,14 @@ class IterationStats:
             elif event.type == EngineCoreEventType.PREEMPTED:
                 self.num_preempted_reqs += 1
                 LoRARequestStates.preempted_request(lora_stats, req_id)
+            elif event.type == EngineCoreEventType.KV_CACHE_WAIT_START:
+                req_stats.kv_cache_wait_start_ts = event.timestamp
+            elif event.type == EngineCoreEventType.KV_CACHE_WAIT_END:
+                if req_stats.kv_cache_wait_start_ts != 0.0:
+                    req_stats.kv_cache_wait_time += (
+                        event.timestamp - req_stats.kv_cache_wait_start_ts
+                    )
+                    req_stats.kv_cache_wait_start_ts = 0.0
 
     def update_from_finished_request(
         self,
@@ -308,10 +332,12 @@ class IterationStats:
 
         # Queued interval is from first QUEUED event to first SCHEDULED
         queued_time = req_stats.scheduled_ts - req_stats.queued_ts
+        req_stats.queue_latency = max(queued_time, 0.0)
 
         # Prefill interval is from first SCHEDULED to first NEW_TOKEN
         # Any preemptions during prefill is included in the interval
         prefill_time = req_stats.first_token_ts - req_stats.scheduled_ts
+        req_stats.prefill_latency = max(prefill_time, 0.0)
 
         # Decode interval is from first NEW_TOKEN to last NEW_TOKEN
         # Any preemptions during decode are included
@@ -328,6 +354,18 @@ class IterationStats:
             else 0
         )
 
+        # If there is an outstanding wait start timestamp due to an
+        # abnormal exit, close it using the scheduled timestamp to avoid
+        # skewing metrics.
+        if req_stats.kv_cache_wait_start_ts != 0.0:
+            req_stats.kv_cache_wait_time += max(
+                req_stats.scheduled_ts - req_stats.kv_cache_wait_start_ts, 0.0
+            )
+            req_stats.kv_cache_wait_start_ts = 0.0
+
+        kv_cache_wait_time = req_stats.kv_cache_wait_time
+        queue_time_wo_kv = max(queued_time - kv_cache_wait_time, 0.0)
+
         finished_req = FinishedRequestStats(
             finish_reason=finish_reason,
             e2e_latency=e2e_latency,
@@ -339,6 +377,8 @@ class IterationStats:
             inference_time=inference_time,
             decode_time=decode_time,
             mean_time_per_output_token=mean_time_per_output_token,
+            kv_cache_wait_time=kv_cache_wait_time,
+            queue_time_wo_kv=queue_time_wo_kv,
         )
         self.finished_requests.append(finished_req)
 

@@ -804,6 +804,16 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             histogram_queue_time_request, engine_indexes, model_name
         )
 
+        histogram_kv_wait_time_request = self._histogram_cls(
+            name="vllm:request_kv_cache_wait_time_seconds",
+            documentation="Histogram of time spent waiting for remote KV cache readiness.",
+            buckets=request_latency_buckets,
+            labelnames=labelnames,
+        )
+        self.histogram_kv_wait_time_request = make_per_engine(
+            histogram_kv_wait_time_request, engine_indexes, model_name
+        )
+
         histogram_inference_time_request = self._histogram_cls(
             name="vllm:request_inference_time_seconds",
             documentation="Histogram of time spent in RUNNING phase for request.",
@@ -972,6 +982,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             )
             self.histogram_queue_time_request[engine_idx].observe(
                 finished_request.queued_time
+            )
+            self.histogram_kv_wait_time_request[engine_idx].observe(
+                finished_request.kv_cache_wait_time
             )
             self.histogram_prefill_time_request[engine_idx].observe(
                 finished_request.prefill_time

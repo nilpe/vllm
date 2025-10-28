@@ -175,11 +175,20 @@ class PromptTokenUsageInfo(OpenAIBaseModel):
     cached_tokens: int | None = None
 
 
+class LatencyBreakdown(OpenAIBaseModel):
+    total_ttft_seconds: float | None = None
+    queue_time_seconds: float | None = None
+    kv_cache_wait_time_seconds: float | None = None
+    queue_time_no_kv_seconds: float | None = None
+    prefill_time_seconds: float | None = None
+
+
 class UsageInfo(OpenAIBaseModel):
     prompt_tokens: int = 0
     total_tokens: int = 0
     completion_tokens: int | None = 0
     prompt_tokens_details: PromptTokenUsageInfo | None = None
+    latency_breakdown: LatencyBreakdown | None = None
 
 
 class RequestResponseMetadata(BaseModel):
