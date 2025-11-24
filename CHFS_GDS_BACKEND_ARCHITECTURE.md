@@ -34,41 +34,37 @@ flowchart TD
 flowchart LR
   subgraph GPU
     GAPP[GPU LLM decoder]
-    GLSTM[GPU KV LSTM index]
-    GENG[GPU NVMeoF RDMA cmd builder]
+    GLSTM[GPU KV index or caller]
+    GREQ[GPU request sender KV id]
   end
 
-  subgraph CPU
-    CCTRL[CPU control thread]
-    COFF[CPU offset translator KVid to LBA]
-    CSQ[CPU NVMeoF SQ CQ owner]
+  subgraph LOCAL_CPU
+    CCTRL[Local CPU proxy thread]
   end
 
   subgraph FABRIC
-    RNIC[RNIC with GPUDirect RDMA]
+    RNIC[RNIC GPUDirect RDMA]
   end
 
-  subgraph TARGET
-    QP[Remote NVMeoF queue pair]
-    NVME[NVMe SSD raw block]
-    LAYOUT[KV layout on raw blocks]
+  subgraph REMOTE
+    RCPU[Remote CPU request handler]
+    RLSM[Remote LSMT engine like RocksDB]
+    RNVM[NVMe SSD raw block]
   end
 
   %% request path
   GAPP --> GLSTM
-  GLSTM -->|KV id| CCTRL
-  CCTRL --> COFF
-  COFF -->|LBA len| GENG
-  GENG --> CSQ
-  CSQ -->|NVMeoF cmd| RNIC
-  RNIC --> QP
-  QP --> NVME
+  GLSTM -->|KV id| GREQ
+  GREQ --> CCTRL
+  CCTRL -->|KV id| RNIC
+  RNIC --> RCPU
+  RCPU -->|lookup key| RLSM
+  RLSM -->|block location| RNVM
 
   %% data return path
-  NVME -->|DMA read| RNIC
-  RNIC -->|GPUDirect RDMA| GAPP
+  RNVM -->|read and DMA| RNIC
+  RNIC -->|RDMA to GPU mem| GAPP
 
-  %% layout hint
-  NVME --- LAYOUT
+
 
 ```
