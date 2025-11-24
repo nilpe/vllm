@@ -1,6 +1,10 @@
 
 ## GDSバックエンドの全体フロー（シーケンス図）
-
+分散してNVMe-oFもどきをやるのはすでにMooncakeでやってる｡  
+MoonCakeはメタデータサーバーがSPoFになるし､RPCが全部こいつに来るのでスケーラブルではない｡  
+CHFSは全ノードがSPoFと言われればそれはそうなんだけど､Group Relative Policy Optimization時のKV共有向けに使える気がする｡  
+あと普通に分散アドホックFSのGDSバックエンドはない(OSSの範囲で)｡  
+BeeONDは普通に性能でないはずだしPegasusでGDSできてないので､作る意味はありそう｡  
 ```mermaid
 
 flowchart TD
@@ -30,8 +34,10 @@ flowchart TD
 
 ```
 ## 1トークンレベルKV-Cache再利用機構の図
-Prefillがめっっっっっちゃ重くて､再利用できる部分は1トークンたりとも再計算したくないし､無駄なパディングとか､共通する部分があるのに別のファイルに乗ってもほしくない場合のKVS
-trie木とブロックデバイスごとのconsistent hashingベースで作る
+Prefillがめっっっっっちゃ重くて､再利用できる部分は1トークンたりとも再計算したくないし､無駄なパディングとか､共通する部分があるのに別のファイルに乗ってもほしくない場合のKVS  
+DeepSeek-R1の1トークンあたりのKVのサイズは100MB超えてるので､こいつがメインターゲット｡  
+trie木とブロックデバイスごとのconsistent hashingベースで作る｡
+普通にGPUから呼べる速い分散KVSとしての研究価値はあるかも
 ```mermaid
 flowchart LR
   subgraph GPU
