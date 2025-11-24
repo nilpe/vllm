@@ -1,5 +1,5 @@
 
-## 1. 全体フロー（シーケンス図）
+## GDSバックエンドの全体フロー（シーケンス図）
 
 ```mermaid
 
@@ -29,7 +29,9 @@ flowchart TD
   C3 -->|GDR / RDMA| D3
 
 ```
-
+## 1トークンレベルKV-Cache再利用機構の図
+Prefillがめっっっっっちゃ重くて､再利用できる部分は1トークンたりとも再計算したくないし､無駄なパディングとか､共通する部分があるのに別のファイルに乗ってもほしくない場合のKVS
+trie木とブロックデバイスごとのconsistent hashingベースで作る
 ```mermaid
 flowchart LR
   subgraph GPU
