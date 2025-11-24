@@ -29,3 +29,46 @@ flowchart TD
   C3 -->|GDR / RDMA| D3
 
 ```
+
+```mermaid
+flowchart LR
+  subgraph GPU
+    GAPP[GPU LLM decoder]
+    GLSTM[GPU KV LSTM index]
+    GENG[GPU NVMeoF RDMA cmd builder]
+  end
+
+  subgraph CPU
+    CCTRL[CPU control thread]
+    COFF[CPU offset translator KVid to LBA]
+    CSQ[CPU NVMeoF SQ CQ owner]
+  end
+
+  subgraph FABRIC
+    RNIC[RNIC with GPUDirect RDMA]
+  end
+
+  subgraph TARGET
+    QP[Remote NVMeoF queue pair]
+    NVME[NVMe SSD raw block]
+    LAYOUT[KV layout on raw blocks]
+  end
+
+  %% request path
+  GAPP --> GLSTM
+  GLSTM -->|KV id| CCTRL
+  CCTRL --> COFF
+  COFF -->|LBA len| GENG
+  GENG --> CSQ
+  CSQ -->|NVMeoF cmd| RNIC
+  RNIC --> QP
+  QP --> NVME
+
+  %% data return path
+  NVME -->|DMA read| RNIC
+  RNIC -->|GPUDirect RDMA| GAPP
+
+  %% layout hint
+  NVME --- LAYOUT
+
+```
